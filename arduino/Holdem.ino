@@ -35,6 +35,7 @@ void setup() {
         for (byte x = FIRST_BOARD_CHANNEL; x < (FIRST_BOARD_CHANNEL + NUM_BOARD_READERS); x++) {
           Select_Channel(x, RFID_MUX);
           mfrc522.PCD_Init();
+          mfrc522.PCD_SetAntennaGain(mfrc522.RxGain_max);
           Serial.print(F("Board "));
           Serial.print(x-FIRST_BOARD_CHANNEL+1);
           Serial.println(F(" initialized."));
@@ -52,7 +53,7 @@ void loop() {
                                 
 				if (mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial()) {
 					Serial.print(F("Player "));
-					Serial.print(i);
+					Serial.print(i+1);
 					Serial.print(F(" Card UID:"));
 					for (byte j = 0; j < mfrc522.uid.size; j++) {
 						Serial.print(mfrc522.uid.uidByte[j] < 0x10 ? " 0" : " ");
@@ -74,7 +75,7 @@ void loop() {
         Serial.println(F("All players have 2 cards"));
         for (byte i = 0; i < NUM_PLAYERS; i++) {
           Serial.print(F("Player "));
-          Serial.print(i);
+          Serial.print(i+1);
           Serial.print(F("'s Cards: "));
           Serial.print(Player_Cards[i][0], HEX);
           Serial.println(Player_Cards[i][1], HEX);
@@ -101,7 +102,7 @@ void loop() {
 		if(Game_State_Change()) {
 			for (byte i = 0; i < NUM_PLAYERS; i++) {
 				Serial.print(F("Player "));
-				Serial.print(i);
+				Serial.print(i+1);
 				Serial.print(F(" Cards: "));
 				Serial.print(Player_Cards[i][0],HEX);
 				Serial.print(Player_Cards[i][1],HEX);
@@ -136,8 +137,9 @@ int Update_On_Readers(int num) {
 		if (bitRead(num, x) == 0 && state == 1) {  // Player switch was changed to ON since last check. Need to re-Init the reader.
 			Select_Channel(x, RFID_MUX);
 			mfrc522.PCD_Init();
+                        mfrc522.PCD_SetAntennaGain(mfrc522.RxGain_max);
                         Serial.print(F("Player "));
-                        Serial.print(x);
+                        Serial.print(x+1);
                         Serial.println(F(" reader initialized."));
 		}
 		bitWrite(num, x, state);
@@ -159,13 +161,17 @@ bool Hand_Complete() {
         int count = 0;
 	if (bitRead(Game_State, RIVER)) { return(true);}  // River card has been dealt.
 	else {
+                int winner=0;
 		for (byte j = 0; j < NUM_PLAYERS; j++) {
 			if (bitRead(Game_State, j)) {
                            count++;
+                           winner=j+1;
                         }
 		}
                 if (count < 2) { // Only 1 player has cards.
-                  Serial.println(F("Only one player remains."));
+                  Serial.print(F("Player "));
+                  Serial.print(winner);
+                  Serial.println(F(" wins! Everyone else folded."));
                   return(true);
                 }
 		else {return(false);}
