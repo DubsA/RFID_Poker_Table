@@ -79,7 +79,7 @@ void loop() {
           successWrite = false;
         }
         else {
-          int start = 4*((suit+1)*(rank)+1)+1;
+          int start = 4*(13*suit + rank+1)+1;
           for (byte i = 0; i < 4; i++) {
             EEPROM.write(start + i, mfrc522.uid.uidByte[i]);
           }
@@ -94,7 +94,7 @@ void loop() {
     for (byte j = 0; j < NUM_RANKS; j++) {
       Serial.print(ranks[j] + suits[i]);
       Serial.print(F(" key: "));
-      int start = 4*((i+1)*j+1)+1;
+      int start = 4*(13*i+j+1)+1;
       for (byte k = start; k < start+4; k++) {
         Serial.print(EEPROM.read(k) < 0x10 ? " 0" : " ");
         Serial.print(EEPROM.read(k), HEX);
