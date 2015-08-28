@@ -1,6 +1,8 @@
 #include <SPI.h>
 #include <MFRC522.h>
+#include <EEPROM.h>
 
+#define EMPTY                           0xFF
 #define SS_PIN				10		
 #define SWITCH_PIN			A0
 #define RFID_MUX			0
@@ -11,6 +13,12 @@
 #define FLOP				12		// Bit location in Game_State
 #define TURN				13		// Bit location in Game_State
 #define RIVER				14		// Bit location in Game_State
+#define CARD_ADD                        0
+#define CARD_REMOVE                     1
+#define CARD_FOLD                       2
+#define HAND_END                        3
+#define LED_PIN                         A5
+boolean VERBOSE;
 
 byte mux_pin[2][4] = {{2,3,4,5},{6,7,8,9}};
 int On_Readers = 15360;  // Equivalent to B11110000000000. The first 4 bits represent the muck and board readers. The remaining 10 bits will store the state of the player switches.
@@ -18,6 +26,12 @@ int Game_State = 0; //  Will be used to store the presence of cards in specified
 int Previous_Game_State = 0;
 byte Player_Cards[NUM_PLAYERS][2];
 byte Board_Cards[5];
+float game_summary[2*NUM_PLAYERS+5][3];
+byte readid[4];
+byte storedid[4];
+
+String ranks[13] = {"A","K","Q","J","T","9","8","7","6","5","4","3","2"};
+String suits[4] = {"s","h","d","c"};
 
 MFRC522 mfrc522(SS_PIN);	// Create MFRC522 instance
 
@@ -26,98 +40,98 @@ void setup() {
 	while (!Serial);		// Do nothing if no serial port is opened (added for Arduinos based on ATMEGA32U4)
 	SPI.begin();			// Init SPI bus
         for (byte x = 0; x <=3; x++) {
-          pinMode(mux_pin[0][x],OUTPUT);
-          pinMode(mux_pin[1][x],OUTPUT); 
+          pinMode(mux_pin[RFID_MUX][x],OUTPUT);
+          pinMode(mux_pin[SWITCH_MUX][x],OUTPUT); 
         }
-	memset(Player_Cards, 0x00, sizeof(Player_Cards));
-	memset(Board_Cards, 0x00, sizeof(Board_Cards));
+        pinMode(LED_PIN,OUTPUT);
+        VERBOSE = digitalRead(A1);
+	memset(Player_Cards, EMPTY, sizeof(Player_Cards));
+	memset(Board_Cards, EMPTY, sizeof(Board_Cards));
         // Initialize the board readers
         for (byte x = FIRST_BOARD_CHANNEL; x < (FIRST_BOARD_CHANNEL + NUM_BOARD_READERS); x++) {
           Select_Channel(x, RFID_MUX);
           mfrc522.PCD_Init();
           mfrc522.PCD_SetAntennaGain(mfrc522.RxGain_max);
-          Serial.print(F("Board "));
-          Serial.print(x-FIRST_BOARD_CHANNEL+1);
-          Serial.println(F(" initialized."));
+          if (VERBOSE) {Serial.print(F("Board "));}
+          if (VERBOSE) {Serial.print(x-FIRST_BOARD_CHANNEL+1);}
+          if (VERBOSE) {Serial.print(F(" initialized. Antenna Gain = "));}
+          if (VERBOSE) {Serial.println(mfrc522.PCD_GetAntennaGain());}
         }
 }
 
 void loop() {
+        VERBOSE = digitalRead(A1);
 	On_Readers = Update_On_Readers(On_Readers);
 	// Loop through player readers and look for new cards
 	while (((Game_State + 15360) ^ On_Readers) != 0) {  // Wait until all players have cards to move to next phase of game
 		for (byte i = 0; i < NUM_PLAYERS; i++) {
-			if (bitRead(On_Readers, i) & ~bitRead(Game_State, i)) {  // Player switch is on and antenna has been initialized. Look for new cards.
+			if (bitRead(On_Readers, i)){// & ~bitRead(Game_State, i)) {  // Player switch is on and antenna has been initialized. Look for new cards.
 				// Look for new cards
 				Select_Channel(i, RFID_MUX);
                                 
 				if (mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial()) {
-					Serial.print(F("Player "));
-					Serial.print(i+1);
-					Serial.print(F(" Card UID:"));
-					for (byte j = 0; j < mfrc522.uid.size; j++) {
-						Serial.print(mfrc522.uid.uidByte[j] < 0x10 ? " 0" : " ");
-						Serial.print(mfrc522.uid.uidByte[j], HEX);
+                                        Blink_LED();
+					if (VERBOSE) {Serial.print(F("Player "));}
+					if (VERBOSE) {Serial.print(i+1);}
+					if (VERBOSE) {Serial.print(F(" Card: "));}
+					for (byte j = 0; j < 4; j++) {
+						readid[j] = mfrc522.uid.uidByte[j];
 					}
-					if (Player_Cards[i][0] == 0x00) {  // Store card value in memory
-						Player_Cards[i][0] = mfrc522.uid.uidByte[0];
-					}
-					else {  // Player has a second card
-						Player_Cards[i][1] = mfrc522.uid.uidByte[0];
-						bitSet(Game_State, i);  //  No longer need to read data from player. No provision for misdelt cards. Need a verification function to check cards again.
-					}
-					Serial.println();
+                                        int position = findposition(readid);
+                                        if (position == -1) {
+                                          if (VERBOSE) {Serial.print(F("Card Unknown"));}
+                                        }
+                                        else {
+                                          int suit = position / 13;
+                                          int rank = position % 13;
+                                          if (VERBOSE) {Serial.print(ranks[rank]+suits[suit]);}
+                                          if (VERBOSE) {Serial.print(millis());}
+                                          Store_Player_Card(i,position);
+                                        }
+					if (VERBOSE) {Serial.println();}
                                         mfrc522.PICC_HaltA();
 				}				
 			}
 		}
 	}
-        Serial.println(F("All players have 2 cards"));
-        for (byte i = 0; i < NUM_PLAYERS; i++) {
-          Serial.print(F("Player "));
-          Serial.print(i+1);
-          Serial.print(F("'s Cards: "));
-          Serial.print(Player_Cards[i][0], HEX);
-          Serial.println(Player_Cards[i][1], HEX);
-        }
+        if (VERBOSE) {Serial.println(F("All players have 2 cards"));}
+        DumpCardsToSerial();
         Previous_Game_State = Game_State;
 	while(!Hand_Complete()) {
 	// Look for cards in muck/board readers. Check if cards match players cards. Otherwise, add new cards to board.
 		for (byte x = FIRST_BOARD_CHANNEL; x < (FIRST_BOARD_CHANNEL + NUM_BOARD_READERS); x++){
 			Select_Channel(x,RFID_MUX);
 			if (mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial()) {
+                                Blink_LED();
 				// New card found in muck/board pile. Compare to player cards to determine if a player has folded
 				// If new card does not match a player card and card appears on the board reader, then card should be added to board.
-				if (!Player_Folded()) {
-					if (x > (FIRST_BOARD_CHANNEL + NUM_BOARD_READERS - 2)) {
+				for (byte j = 0; j < 4; j++) {
+				  readid[j] = mfrc522.uid.uidByte[j];
+				}
+                                int position = findposition(readid);
+                                if (position != -1) {
+                                  if (!Player_Folded(position)) {
+					if (x > (FIRST_BOARD_CHANNEL + NUM_BOARD_READERS - 2)) { // Location is not one of the muck readers. This prevents burn cards from appearing on the board.
 						for (byte j = 0; j < 5; j++) {
+                                                        if (Board_Cards[j] == position) {break;} // Read card has already been stored.
                                                         if (j > 1) { bitSet(Game_State, (FLOP + j - 2)); }
-							if (Board_Cards[j] == 0x00) { Board_Cards[j] = mfrc522.uid.uidByte[0]; break;}
+							if (Board_Cards[j] == EMPTY) { 
+                                                          Add_Board_Card(j,position);
+                                                          break;
+                                                        }
 						}
 					}
-				}
+				  }
+                                }
                                 mfrc522.PICC_HaltA();
 			}	
 		}
 		if(Game_State_Change()) {
-			for (byte i = 0; i < NUM_PLAYERS; i++) {
-				Serial.print(F("Player "));
-				Serial.print(i+1);
-				Serial.print(F(" Cards: "));
-				Serial.print(Player_Cards[i][0],HEX);
-				Serial.print(Player_Cards[i][1],HEX);
-				Serial.println();
-			}
-			Serial.print(F("Board Cards: "));
-			for (byte i = 0; i < 5; i++) {
-				if (Board_Cards[i] == 0x00) {break;}
-				Serial.print(Board_Cards[i], HEX);
-			}
-                        Serial.println();
+                  DumpCardsToSerial();
 		}
 	}
-	
-	Serial.println(F("Hand Complete"));
+	Game_Summary_DumpToSerial();
+	if (VERBOSE) {Serial.println(F("Hand Complete"));}
         Reset();
 }
 
@@ -138,40 +152,68 @@ int Update_On_Readers(int num) {
 			Select_Channel(x, RFID_MUX);
 			mfrc522.PCD_Init();
                         mfrc522.PCD_SetAntennaGain(mfrc522.RxGain_max);
-                        Serial.print(F("Player "));
-                        Serial.print(x+1);
-                        Serial.println(F(" reader initialized."));
+                        if (VERBOSE) {Serial.print(F("Player "));}
+                        if (VERBOSE) {Serial.print(x+1);}
+                        if (VERBOSE) {Serial.print(F(" reader initialized. Antenna Gain = "));}
+                        if (VERBOSE) {Serial.println(mfrc522.PCD_GetAntennaGain());}
 		}
 		bitWrite(num, x, state);
 	}
         return num;
 }
 
-bool Player_Folded() {
-	for (byte i = 0; i < NUM_PLAYERS; i++) {
-		if (mfrc522.uid.uidByte[0] == Player_Cards[i][0] || mfrc522.uid.uidByte[0] == Player_Cards[i][1]) { // Player folded.
+bool Player_Folded(byte test_position) {
+        for (byte i = 0; i < NUM_PLAYERS; i++) {
+		if (test_position == Player_Cards[i][0] || test_position == Player_Cards[i][1]) { // Player folded.
 			bitClear(Game_State, i);
+                        Update_Game_Summary(2*i, Player_Cards[i][0], CARD_FOLD, millis()/1000.);
+                        Update_Game_Summary(2*i+1, Player_Cards[i][1], CARD_FOLD, millis()/1000.);
 			return(true);
 		}
 	}
 	return(false);
 }
 
+byte Get_Number_Of_Board_Cards() {
+  byte num_board_cards = 0;
+  if (bitRead(Game_State,FLOP) == 1) num_board_cards = 3;
+  if (bitRead(Game_State,TURN) == 1) num_board_cards = 4;
+  if (bitRead(Game_State,RIVER) == 1) num_board_cards = 5;
+  return num_board_cards;
+}
+
 bool Hand_Complete() {
         int count = 0;
-	if (bitRead(Game_State, RIVER)) { return(true);}  // River card has been dealt.
+        float end_time = millis()/1000. + 5.;
+	if (bitRead(Game_State, RIVER)) { // River card has been dealt.
+          for (byte i=0; i<NUM_PLAYERS; i++) {
+            if (bitRead(Game_State,i)) {
+              Update_Game_Summary(2*i,EMPTY,HAND_END,end_time);
+              Update_Game_Summary(2*i+1,EMPTY,HAND_END,end_time);
+            }
+          }
+          for (byte i=0; i<Get_Number_Of_Board_Cards(); i++) {
+            Update_Game_Summary(2*NUM_PLAYERS+i,EMPTY,HAND_END,end_time);
+          }
+          return(true);
+        }  
 	else {
                 int winner=0;
 		for (byte j = 0; j < NUM_PLAYERS; j++) {
 			if (bitRead(Game_State, j)) {
                            count++;
                            winner=j+1;
+                           Update_Game_Summary(2*j,EMPTY,HAND_END,end_time);
+                           Update_Game_Summary(2*j+1,EMPTY,HAND_END,end_time);
                         }
 		}
                 if (count < 2) { // Only 1 player has cards.
-                  Serial.print(F("Player "));
-                  Serial.print(winner);
-                  Serial.println(F(" wins! Everyone else folded."));
+                  if (VERBOSE) {Serial.print(F("Player "));}
+                  if (VERBOSE) {Serial.print(winner);}
+                  if (VERBOSE) {Serial.println(F(" wins! Everyone else folded."));}
+                  for (byte i=0; i<Get_Number_Of_Board_Cards(); i++) {
+                    Update_Game_Summary(2*NUM_PLAYERS+i,EMPTY,HAND_END,end_time);
+                  }
                   return(true);
                 }
 		else {return(false);}
@@ -188,6 +230,147 @@ bool Game_State_Change() {
 
 void Reset() {
   Game_State = 0;
-  memset(Player_Cards, 0x00, sizeof(Player_Cards));
-  memset(Board_Cards, 0x00, sizeof(Board_Cards));
+  memset(Player_Cards, EMPTY, sizeof(Player_Cards));
+  memset(Board_Cards, EMPTY, sizeof(Board_Cards));
+  memset(game_summary, 0., sizeof(game_summary));
 }
+
+int findposition(byte test[]) {
+  for (int i=0; i<52; i++) {
+    int start = 4*(i+1)+1;
+    for (int j=0; j<4; j++) {
+      storedid[j] = EEPROM.read(start+j);
+    }
+    if (checkTwo(test,storedid)) return i;
+  }
+  return -1;
+}
+boolean checkTwo(byte a[], byte b[]) {
+  boolean match = true;
+  for ( int i = 0; i < 4; i++) {
+    if (a[i] != b[i]) match = false;
+  }
+  if (match) return true;
+  else return false;
+}
+
+void DumpCardsToSerial() {
+  for (byte i = 0; i < NUM_PLAYERS; i++) {
+    if (bitRead(Game_State,i) == 1) {
+      if (VERBOSE) {Serial.print(F("Player "));}
+      if (VERBOSE) {Serial.print(i+1);}
+      if (VERBOSE) {Serial.print(F("'s Cards: "));}
+      if (VERBOSE) {Serial.print(ranks[Player_Cards[i][0] % 13]+suits[Player_Cards[i][0] / 13]);}
+      if (VERBOSE) {Serial.println(ranks[Player_Cards[i][1] % 13]+suits[Player_Cards[i][1] / 13]);}
+    }
+  }
+  if (VERBOSE) {Serial.print(F("Board Cards: "));}
+  for (byte i = 0; i < Get_Number_Of_Board_Cards(); i++) {
+    if (VERBOSE) {Serial.print(ranks[Board_Cards[i] % 13]+suits[Board_Cards[i] / 13]);}
+  }
+  if (VERBOSE) {Serial.println();}
+}
+
+void Game_Summary_DumpToSerial() {
+  for (byte i=0; i<2*NUM_PLAYERS; i++) {
+    Serial.print((byte)game_summary[i][0]);
+    Serial.print(F(" "));
+    Serial.print(ranks[(byte)game_summary[i][0] % 13]+suits[(byte)game_summary[i][0] / 13]);
+    Serial.print(F(" "));
+    Serial.print(game_summary[i][1]);
+    Serial.print(F(" "));
+    Serial.println(game_summary[i][2]);
+  }
+  for (byte i = 0; i < Get_Number_Of_Board_Cards(); i++) {
+    Serial.print((byte)game_summary[2*NUM_PLAYERS+i][0]);
+    Serial.print(F(" "));
+    Serial.print(ranks[Board_Cards[i] % 13]+suits[Board_Cards[i] / 13]);
+    Serial.print(F(" "));
+    Serial.print(game_summary[2*NUM_PLAYERS+i][1]);
+    Serial.print(F(" "));
+    Serial.println(game_summary[2*NUM_PLAYERS+i][2]);
+  }
+  if (VERBOSE) {Serial.println();}
+}
+
+void Update_Game_Summary(byte position, byte card_id, byte instruction, float time) {
+  switch (instruction) {
+    case CARD_ADD:
+      game_summary[position][0] = card_id;
+      game_summary[position][1] = time;
+      break;
+    case CARD_REMOVE:
+      for (byte i=0; i<3; i++) {
+        game_summary[position][i] = EMPTY;
+      }
+      break;
+    case CARD_FOLD:
+      game_summary[position][2] = time;
+      break;
+    case HAND_END:
+      game_summary[position][2] = time;
+      break;
+  }
+}
+
+void Store_Player_Card(byte player_id, byte card_id) {
+  int duplicate = Duplicate_Player_Card(card_id); // Stores the player_id of a duplicate location.
+  switch (duplicate) {
+    case -1: // No duplicate found.
+      Add_Player_Card(player_id,card_id);
+      break;
+    default:
+      if (duplicate != player_id) { // Player has a card that was previously at another location
+        // Remove card from duplicate location
+        if (Player_Cards[duplicate][0] == card_id) {
+          // Move duplicate player's 2nd card to 1st location
+          Player_Cards[duplicate][0] = Player_Cards[duplicate][1];
+          Update_Game_Summary(2*duplicate,game_summary[2*duplicate+1][0],CARD_ADD,game_summary[2*duplicate+1][1]);
+        }
+        // Remove duplicate player's 2nd card
+        Player_Cards[duplicate][1] = EMPTY;
+        Update_Game_Summary(2*duplicate+1,EMPTY,CARD_REMOVE,EMPTY);
+        bitClear(Game_State,duplicate);
+        Add_Player_Card(player_id,card_id);
+      }
+  }
+}
+
+void Add_Player_Card(byte player_id, byte card_id) {
+  if (Player_Cards[player_id][0] == EMPTY) {  // Store card value in memory
+    Player_Cards[player_id][0] = card_id;
+    Update_Game_Summary(2*player_id,card_id,CARD_ADD,millis()/1000.);
+  }
+  else if (Player_Cards[player_id][1] == EMPTY) {  // Player has a second card
+    Player_Cards[player_id][1] = card_id;
+    bitSet(Game_State, player_id);  //  No longer need to read data from player. No provision for misdelt cards. Need a verification function to check cards again.
+    Update_Game_Summary(2*player_id+1,card_id,CARD_ADD,millis()/1000.);
+  }
+  else { // Player received an additional card. Card may belong to another player. Or one of the original cards may have flipped during the deal and the player received a replacement.
+    Serial.print(F("What do I do with this card"));
+  }
+}
+
+void Add_Board_Card(byte board_id, byte card_id) {
+  Board_Cards[board_id] = card_id;
+  Update_Game_Summary(2*NUM_PLAYERS+board_id,card_id,CARD_ADD,millis()/1000.);
+}
+
+int Duplicate_Player_Card(byte card_id) {
+  for (byte i=0; i<NUM_PLAYERS; i++) {
+    if (Player_Cards[i][0] == card_id || Player_Cards[i][1] == card_id) { // Return player that had duplicate card
+      return i;
+    }
+  }
+  return -1; // No duplicate found
+}
+
+void Blink_LED() {
+  for (byte i=0; i<4; i++) {
+    analogWrite(LED_PIN,(i+1)*64);
+    delay(31);
+  }
+  for (byte i=4; i>0; i--) {
+    analogWrite(LED_PIN,(i-1)*64);
+    delay(31);
+  }
