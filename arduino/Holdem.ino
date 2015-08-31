@@ -17,13 +17,13 @@
 #define CARD_REMOVE                     1
 #define CARD_FOLD                       2
 #define HAND_END                        3
-#define LED_PIN                         A5
+#define LED_PIN                         6
 boolean VERBOSE;
 
 byte mux_pin[2][4] = {{2,3,4,5},{6,7,8,9}};
-int On_Readers = 15360;  // Equivalent to B11110000000000. The first 4 bits represent the muck and board readers. The remaining 10 bits will store the state of the player switches.
-int Game_State = 0; //  Will be used to store the presence of cards in specified locations as a 13 bit binary number. From left to right bit: River, Turn, Flop, Player 10, Player 9, ...  Will also be used to determine game state.
-int Previous_Game_State = 0;
+int On_Readers;  // Equivalent to B11110000000000. The first 4 bits represent the muck and board readers. The remaining 10 bits will store the state of the player switches.
+int Game_State; //  Will be used to store the presence of cards in specified locations as a 13 bit binary number. From left to right bit: River, Turn, Flop, Player 10, Player 9, ...  Will also be used to determine game state.
+int Previous_Game_State;
 byte Player_Cards[NUM_PLAYERS][2];
 byte Board_Cards[5];
 float game_summary[2*NUM_PLAYERS+5][3];
@@ -45,8 +45,7 @@ void setup() {
         }
         pinMode(LED_PIN,OUTPUT);
         VERBOSE = digitalRead(A1);
-	memset(Player_Cards, EMPTY, sizeof(Player_Cards));
-	memset(Board_Cards, EMPTY, sizeof(Board_Cards));
+	Reset();
         // Initialize the board readers
         for (byte x = FIRST_BOARD_CHANNEL; x < (FIRST_BOARD_CHANNEL + NUM_BOARD_READERS); x++) {
           Select_Channel(x, RFID_MUX);
@@ -63,7 +62,7 @@ void loop() {
         VERBOSE = digitalRead(A1);
 	On_Readers = Update_On_Readers(On_Readers);
 	// Loop through player readers and look for new cards
-	while (((Game_State + 15360) ^ On_Readers) != 0) {  // Wait until all players have cards to move to next phase of game
+	while (((Game_State + 15360) ^ On_Readers) != 0 && !Card_On_Board()) {  // Wait until all players have cards to move to next phase of game
 		for (byte i = 0; i < NUM_PLAYERS; i++) {
 			if (bitRead(On_Readers, i)){// & ~bitRead(Game_State, i)) {  // Player switch is on and antenna has been initialized. Look for new cards.
 				// Look for new cards
@@ -230,6 +229,8 @@ bool Game_State_Change() {
 
 void Reset() {
   Game_State = 0;
+  Previous_Game_State = 0;
+  On_Readers = 15360;
   memset(Player_Cards, EMPTY, sizeof(Player_Cards));
   memset(Board_Cards, EMPTY, sizeof(Board_Cards));
   memset(game_summary, 0., sizeof(game_summary));
@@ -273,15 +274,21 @@ void DumpCardsToSerial() {
 
 void Game_Summary_DumpToSerial() {
   for (byte i=0; i<2*NUM_PLAYERS; i++) {
-    Serial.print((byte)game_summary[i][0]);
-    Serial.print(F(" "));
-    Serial.print(ranks[(byte)game_summary[i][0] % 13]+suits[(byte)game_summary[i][0] / 13]);
-    Serial.print(F(" "));
-    Serial.print(game_summary[i][1]);
-    Serial.print(F(" "));
-    Serial.println(game_summary[i][2]);
+    if ((byte)game_summary[i][0] >= 1) {  // Only output cards that were read
+      Serial.print(i);
+      Serial.print(F(" "));
+      Serial.print((byte)game_summary[i][0]);
+      Serial.print(F(" "));
+      Serial.print(ranks[(byte)game_summary[i][0] % 13]+suits[(byte)game_summary[i][0] / 13]);
+      Serial.print(F(" "));
+      Serial.print(game_summary[i][1]);
+      Serial.print(F(" "));
+      Serial.println(game_summary[i][2]);
+    }
   }
   for (byte i = 0; i < Get_Number_Of_Board_Cards(); i++) {
+    Serial.print(2*NUM_PLAYERS+i);
+    Serial.print(F(" "));
     Serial.print((byte)game_summary[2*NUM_PLAYERS+i][0]);
     Serial.print(F(" "));
     Serial.print(ranks[Board_Cards[i] % 13]+suits[Board_Cards[i] / 13]);
@@ -366,11 +373,43 @@ int Duplicate_Player_Card(byte card_id) {
 }
 
 void Blink_LED() {
-  for (byte i=0; i<4; i++) {
-    analogWrite(LED_PIN,(i+1)*64);
+  for (byte i=0; i<16; i++) {
+    analogWrite(LED_PIN,(i+1)*16);
     delay(31);
   }
-  for (byte i=4; i>0; i--) {
-    analogWrite(LED_PIN,(i-1)*64);
+  for (byte i=16; i>0; i--) {
+    analogWrite(LED_PIN,(i-1)*16);
     delay(31);
   }
+}
+
+boolean Card_On_Board() {
+  byte readboardid[4];
+  Select_Channel(FIRST_BOARD_CHANNEL,RFID_MUX);
+  mfrc522.PCD_Init();
+  delay(10);
+  if (!mfrc522.PICC_IsNewCardPresent()) {
+    return false;
+  }
+  if (!mfrc522.PICC_ReadCardSerial()) {
+    return false;
+  }
+  mfrc522.PCD_SetAntennaGain(mfrc522.RxGain_max);
+  for (byte j = 0; j < 4; j++) {
+    readboardid[j] = mfrc522.uid.uidByte[j];
+  }
+  int test_id = findposition(readboardid);
+  static int board_card_id = 0;
+  static unsigned long card_time_on_board;
+  if (test_id == board_card_id) {
+    if (millis() - card_time_on_board > 5000) {
+      board_card_id = 0;
+      return (true);
+    }
+  }
+  else {
+    board_card_id = test_id;
+    card_time_on_board = millis();
+  }
+  return(false);
+}
